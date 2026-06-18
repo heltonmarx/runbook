@@ -59,7 +59,7 @@ This keeps all threads busy without doing anything.
 **Syscall Handling** is where it gets clever. 
 When a goroutine blocks on a syscall (file I/O, network, etc.):
 
- 1. The P detaches form M3 (which is now stuck waiting on the OS)
+ 1. The P detaches from M3 (which is now stuck waiting on the OS)
  2. P picks up a free M (or the runtime creates a new one)
  3. P continues running other goroutines while M3 waits
  4. When the syscall returns, M3 tries to reacquire a P. If none is free, the goroutine goes to the global queue and M3 goes to sleep.
@@ -1550,23 +1550,24 @@ func isPalindrome(s string) bool {
 	s = strings.ToLower(s)
 
 	for l < r {
-		if !isAlphaNumeric(byte(s[l])) {
+		if !isAlphaNumeric(s[l]) {
 			l = l + 1
-		} else if !isAlphaNumeric(byte(s[r])) {
+			continue
+		}
+		if !isAlphaNumeric(s[r]) {
 			r = r - 1
-		} else if byte(s[l]) == byte(s[r]) {
-			l = l + 1
-			r = r - 1
-		} else {
+			continue
+		}
+		if s[l] != s[r] {
 			return false
 		}
-
+		l, r = l+1, r-1
 	}
 	return true
 }
 
 func isAlphaNumeric(c byte) bool {
- return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 ```
 
