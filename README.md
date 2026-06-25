@@ -1571,6 +1571,56 @@ func isAlphaNumeric(c byte) bool {
 }
 ```
 
+## 207. Course Schedule
+There are a total of numCourses courses you have to take, labeled from 0 to  `numCourses - 1`. 
+
+You are given an array prerequisites where`prerequisites[i] = [ai, bi]` indicates that you **must** take course bi first if you want to take course ai.
+
+* For example, the `pair [0, 1]`, indicates that to take course `0` you have to first take course `1`.
+  
+Return  `true` if you can finish all courses. Otherwise, return `false`.
+
+```go
+func canFinish(numCourses int, prerequisites [][]int) bool {
+	adj := make([][]int, numCourses)
+	for _, p := range prerequisites {
+		i, j := p[0], p[1]
+		adj[i] = append(adj[i], j)
+	}
+
+	visiting := make([]bool, numCourses) // current DFS path
+	done := make([]bool, numCourses)     // fully explored, no cycle
+
+	var dfs func(int) bool
+	dfs = func(course int) bool {
+		if visiting[course] {
+			return false // cycle
+		}
+		if done[course] {
+			return true // already safe
+		}
+
+		visiting[course] = true
+		for _, pre := range adj[course] {
+			if !dfs(pre) {
+				return false
+			}
+		}
+		visiting[course] = false
+		done[course] = true
+		return true
+	}
+
+	for i := range numCourses {
+		if !dfs(i) {
+			return false
+		}
+	}
+	return true
+}
+```
+
+
 ## Find Cipher
 You're writing a puzzle helper app in which a user can enter a word, and the app
 returns a list of words that are substitution ciphers of the user's word. The list
