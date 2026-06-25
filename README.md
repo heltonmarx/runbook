@@ -1649,3 +1649,103 @@ func findCipher(s string, input string) bool {
 	return len(backward) == len(forward)
 }
 ```
+
+## PSE
+
+We are working on a security system for a badged-access room in our company's building.
+Given an ordered list of employees who used their badge to enter or exit the room, write a function that returns two collections:
+ - All employees who didn't use their badge while exiting the room - they recorded an enter without a matching exit. (All employees are required to leave the room before the log ends.)
+- All employees who didn't use their badge while entering the room - they recorded an exit without a matching enter. (The room is empty when the log begins.)
+
+Each collection should contain no duplicates, regardless of how many times a given employee matches the criteria for belonging to it.
+
+```
+records1 = [ 
+    ["Paul", "enter"], ["Pauline", "exit"], ["Paul", "enter"], ["Paul", "exit"], ["Martha", "exit"], ["Joe", "enter"],
+    ["Martha", "enter"], ["Steve", "enter"], ["Martha", "exit"], ["Jennifer", "enter"], ["Joe", "enter"], ["Curtis", "exit"],
+    ["Curtis", "enter"], ["Joe", "exit"], ["Martha", "enter"], ["Martha", "exit"], ["Jennifer", "exit"], ["Joe", "enter"],
+    ["Joe", "enter"], ["Martha", "exit"], ["Joe", "exit"], ["Joe", "exit"]
+]
+```
+
+Expected output: 
+ * enter w/o exit: ["Steve", "Curtis", "Paul", "Joe"]
+ * exit w/o enter: ["Martha", "Pauline", "Curtis", "Joe"]
+
+```
+records2 = [
+    ["Paul", "enter"], ["Paul", "exit"],
+]
+```
+Expected output: 
+ * enter w/o exit: []
+ * exit w/o enter: []
+
+```
+records3 = [ 
+    ["Paul", "enter"], ["Paul", "enter"],["Paul", "exit"], ["Paul", "exit"],
+]
+```
+Expected output: 
+ * enter w/o exit: ["Paul"]
+ * exit w/o enter: ["Paul"]
+
+```
+records4 = [
+    ["Raj", "enter"], ["Paul", "enter"], ["Paul", "exit"], ["Paul", "exit"], ["Paul", "enter"], ["Raj", "enter"],
+]
+```
+
+Expected output: 
+ * enter w/o exit: ["Raj", "Paul"]
+ * exit w/o enter: ["Paul"]
+
+### Code
+
+```go
+func checkEmployeeRecord(records [][]string) ([]string, []string) {
+	inside := make(map[string]bool)
+
+	enterWithoutExitSet := make(map[string]struct{})
+	exitWithoutEnterSet := make(map[string]struct{})
+
+	for _, record := range records {
+		if len(record) != 2 {
+			continue
+		}
+
+		name, action := record[0], record[1]
+		switch action {
+		case "enter":
+			if inside[name] {
+				// already inside - entered without a prior exit
+				enterWithoutExitSet[name] = struct{}{}
+			}
+			inside[name] = true
+		case "exit":
+			if !inside[name] {
+				// not inside - exited without a prior exit
+				exitWithoutEnterSet[name] = struct{}{}
+			}
+			inside[name] = false
+		}
+	}
+
+	// Anyone still inside at the end entered without a matching exit
+	for name, ok := range inside {
+		if ok {
+			enterWithoutExitSet[name] = struct{}{}
+		}
+	}
+
+	return toSlice(enterWithoutExitSet), toSlice(exitWithoutEnterSet)
+}
+
+func toSlice(m map[string]struct{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+```
