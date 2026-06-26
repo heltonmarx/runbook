@@ -2082,3 +2082,160 @@ func toSlice[K comparable](m map[K]struct{}) []K {
 }
 
 ```
+
+## First Constructible Word
+Given a sring `s` and a list of words, return the first word that can be built using
+only the letters available in `s` (respecting letter counts).
+
+```go
+func firstConstructibleWord(s string, words []string) string {
+    if s == "" || len(words) == 0 {
+        return ""
+    }
+    freq := make(map[rune]int)
+    for _, ch := range s {
+        freq[ch]++
+    }
+
+    for _, word := range words {
+        if canConstruct(freq, word) {
+            return word
+        }
+    }
+    return ""
+}
+
+func canConstruct(freq map[rune]int, word string) bool {
+    need := make(map[rune]int)
+    for _, ch := range word {
+        need[ch]++
+    }
+    for k, v := range need {
+        if freq[k] < v {
+            return false
+        }
+    }
+    return true
+}
+
+```
+
+## Word Search (Right/Down only) + Return Starting Position
+Find a work in an MxN matrix moving only right or down.
+Return the (row, col) where the word starts.
+Word is guaranteed to exist.
+
+```go
+type Position struct {
+    Row int
+    Col int
+}
+
+func dfs(board [][]byte, word string, r, c, index, rows, cols int) bool {
+    if index == len(word) {
+        return true
+    }
+    if r >= rows || c >= cols {
+        return false
+    }
+    if board[r][c] != word[index] {
+        return false
+    }
+    return dfs(board, word, r, c + 1, index + 1, rows, cols) ||
+           dfs(board, word, r + 1, c, index + 1, rows, cols)
+}
+
+func wordSearch(board [][]byte, word string) Position {
+    rows := len(board)
+    if rows == 0 {
+        return Position{Row: -1, Col: -1}
+    }
+    cols := len(board[0])
+
+    for r := 0; r < rows; r++ {
+        for c := 0; c < cols; c++ {
+            if board[r][c] == word[0] {
+                if dfs(board, word, r, c, 0, rows, cols) {
+                    return Position{Row: r, Col: c}
+                }
+            }
+        }
+    }
+}
+```
+
+## Multiple Words, Each Cell Used Towards One Word Only
+Find all words in the matrix (right/down only). Each matrix cell can only
+contribute to one word. Words are matched greedily in the given order.
+Returns the starting position for each word (parallel to the words slice).
+
+```go
+type Position struct {
+    Row int
+    Col int
+}
+
+func dfs(board [][]byte, word string, r, c, index, rows, cols int, used [][]bool, path *[]Position) bool {
+	if index == len(word) {
+		return true
+	}
+	if r >= rows || c >= cols {
+		return false
+	}
+	if used[r][c] || board[r][c] != word[index] {
+		return false
+	}
+ 
+	*path = append(*path, Position{r, c})
+ 
+	// Try right.
+	if dfs(board, word, r, c+1, index+1, rows, cols, used, path) {
+		return true
+	}
+	// Try down.
+	if dfs(board, word, r+1, c, index+1, rows, cols, used, path) {
+		return true
+	}
+ 
+	// Backtrack — this cell didn't lead to a solution.
+	*path = (*path)[:len(*path)-1]
+	return false
+}
+
+func wordSearchMulti(board [][]byte, words []string) []Position {
+	rows := len(board)
+	if rows == 0 {
+		return nil
+	}
+	cols := len(board[0])
+ 
+	used := make([][]bool, rows)
+	for i := range used {
+		used[i] = make([]bool, cols)
+	}
+ 
+	results := make([]Position, len(words))
+ 
+	for wi, word := range words {
+		results[wi] = Position{-1, -1}
+		found := false
+ 
+		for r := 0; r < rows && !found; r++ {
+			for c := 0; c < cols && !found; c++ {
+				if board[r][c] == word[0] && !used[r][c] {
+					path := []Position{}
+					if dfs(board, word, r, c, 0, rows, cols, used, &path) {
+						// Mark all cells in this path as used.
+						for _, p := range path {
+							used[p.Row][p.Col] = true
+						}
+						results[wi] = Position{r, c}
+						found = true
+					}
+				}
+			}
+		}
+	}
+	return results
+}
+```
