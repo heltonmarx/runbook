@@ -151,6 +151,7 @@ When any one fires, it dequeues itself from all the others.
 Channel operations are **not lock-free** -- there's a real mutex inside. The performance advantage over raw mutexes comes from the scheduler integration: a blocked goroutine doesn't burn a thread, it just parks.
 
 What happens without goroutine control:
+
 ### 1. Goroutine Leak
 ```go
 func leak() {
@@ -394,6 +395,99 @@ func safeWorker(job Job) (err error) {
 }
 ```
 
+---
+
+# Concurrency Primitives
+
+## Thread vs Process
+
+|                   | Process                       | Thread                                |
+| ----------------- | ----------------------------- | ------------------------------------- |
+| Memory space      | Own isolated address space    | Shared within the same process        |
+| Creation cost     | Heavy (OS allocates memory)   | Light (shares parent's resources)     |
+| Crash impact      | Isolated                      | Fatal — can crash the whole process   |
+| Communication     | Requires explicit IPC         | Direct via shared memory              |
+| Context switch    | Expensive                     | Cheaper                               |
+
+**Mental model**: a process is a house; threads are people living inside. People in the same
+house share the kitchen (memory). Two separate houses need phones or mail (IPC).
+
+### Thread Communication
+
+Threads share memory — requires synchronization to avoid races.
+
+| Mechanism                     | Use case                                      |
+| ----------------------------- | --------------------------------------------- |
+| `sync.Mutex` / `sync.RWMutex` | Protect shared state                          |
+| Channels                      | Pass ownership of data between goroutines     |
+| `sync.Cond`                   | Signal state changes between goroutines       |
+| `atomic`                      | Simple counters/flags without lock overhead   |
+
+### Process Communication (IPC)
+
+OS must broker communication between isolated processes.
+
+| Mechanism                         | Description                               | Go example                |
+| --------------------------------- | ----------------------------------------- | ------------------------- |
+| Pipes                             | Unidirectional byte stream, parent↔child  | `exec.Cmd.Stdin/Stdout`   |
+| Unix/TCP Sockets                  | Bidirectional, works across machines      | `net.Dial`, `net.Listen`  |
+| Message Queues                    | Async, decoupled (Kafka, SQS, RabbitMQ)   | Kafka producer/consumer   |
+| Shared Memory (mmap)              | Fastest IPC; maps same physical memory    | `syscall.Mmap`            |
+| Signals | OS-level notifications  | `signal.Notify`                           |
+| Files / Databases                 | Simplest; A writes, B reads | Direct I/O  |
+
+---
+
+# Garbage Collection
+
+## How GC works
+
+The runtime periodically identifies memory no longer reachable by the program and reclaims it.
+Go uses a **tri-color concurrent mark-and-sweep** GC with two tiny STW pauses (< 1ms each).
+
+## Without GC — Manual Memory Management (C/C++)
+
+```c
+int *p = malloc(sizeof(int) * 100);
+// use it...
+free(p); // must free manually
+```
+
+| Risk              | Description                                       |
+| ----------------- | ------------------------------------------------- |
+| Memory leak       | Forgetting `free()` — process grows until OOM     |
+| Use-after-free    | Using memory after `free()` — undefined behavior  |
+| Double-free       | Calling `free()` twice — heap corruption          |
+| Dangling pointers | Pointer to freed memory — undefined behavior      |
+
+Rust solves this without GC using **ownership and borrow checking** — enforced at compile time, zero runtime cost.
+
+## When GC works poorly
+
+| Scenario                          | Why it hurts                                                      |
+| --------------------------------- | ----------------------------------------------------------------- |
+| Latency-sensitive / real-time     | Stop-the-world pauses (HFT, game engines, audio pipelines)        |
+| Memory-constrained environments   | GC runtime overhead too large for embedded/MCU systems            |
+| High allocation rate              | Many short-lived objects increase GC pressure and pause frequency |
+| Large heaps                       | More memory = more scanning = longer GC cycles                    |
+| Pointer-heavy data structures     | Linked lists / graphs force deep pointer tracing                  |
+
+## Go-specific GC tuning
+
+```go
+// Lower = more frequent GC (less memory); Higher = less frequent GC (more memory)
+// Default: 100 (GC when live heap doubles)
+runtime.SetGCPercent(200)
+
+// Cap total heap memory to reduce GC frequency (Go 1.19+)
+runtime.SetMemoryLimit(512 << 20) // 512 MB
+
+// Reuse allocations to reduce GC pressure
+var pool = sync.Pool{New: func() any { return make([]byte, 4096) }}
+```
+
+---
+
 # SOLID
 SOLID is an acronym for five object-oriented software design principles that make systems more maintainable,
 scalable, and testable.
@@ -545,6 +639,8 @@ func (p *PostgresOrderRepo) FindByID(id string) (*Order, error) {...}
 func (p *PostgresOrderRepo) Save(o *Order) error{ ... }
 ```
 
+---
+
 # CAP Theorem
 The CAP Theorem (Brewer, 2000) states that a distributed system can only simultaneously guarantee two of three properties:
 *Consistency*, *Availability*, and *Partition Tolerance*.
@@ -649,16 +745,20 @@ func (s *OrderService) ListOrders(userID string) ([]*Order, error) {
 }
 ```
 
-## CQRS Pattern
-Separating Command (CP: consistent write) from Query (AP: read with eventual cache) is an elegant way to consciously apply CAP in Go services.
-
-# Connecting SOLID and CAP
+## Connecting SOLID and CAP
 
 SOLID principles and the CAP Theorem complement each other in microservices architectures in Go:
 * SRP + CAP: Small, cohesive services allow more surgical CAP choices — a payment service can be CP while the catalog is AP.
 * OCP + CAP: Go interfaces allow swapping CP implementations for AP ones (e.g. Redis → etcd) without changing business code.
 * DIP + CAP: Injecting repositories as abstractions makes it easy to change the CAP trade-off by environment (test: in-memory, prod: Postgres CP).
 * ISP + CAP: Segregated interfaces (Reader/Writer) allow implementing AP reads and CP writes independently.
+
+---
+
+# CQRS Pattern
+Separating Command (CP: consistent write) from Query (AP: read with eventual cache) is an elegant way to consciously apply CAP in Go services.
+
+---
 
 # REST
 
@@ -745,6 +845,8 @@ Standard response:
 }
 ```
 
+---
+
 # DRY
 
 DRY is a software development principle coined by Andrew Hunt and David Thomas in the book **The Pragmatic Programmer**.
@@ -752,6 +854,8 @@ The core idea is not just "don't copy code" — it is deeper: every business dec
 When you need to change something, you change it in one place only.
 
 DRY is not about eliminating all visual code repetition — it is about ensuring that every rule, decision, or piece of system knowledge lives in a single authoritative place. When well applied, it reduces bugs, simplifies maintenance, and makes changes safer. When poorly applied, it creates artificial coupling between things that should be independent.
+
+---
 
 # Postgres
 
@@ -773,11 +877,11 @@ The primary solution for a high number of connections. PgBouncer sits between th
 
 #### Operation Modes
 
-| Mode          | Behavior                               | Ideal for              |
-| ------------- | -------------------------------------- | ---------------------- |
-| `session`     | dedicated connection per client session| maximum compatibility  |
-| `transaction` | connection released after each transaction | most cases         |
-| `statement`   | connection released after each statement | rarely used          |
+| Mode          | Behavior                                      | Ideal for             |
+| ------------- | --------------------------------------------- | --------------------- |
+| `session`     | dedicated connection per client session       | maximum compatibility |
+| `transaction` | connection released after each transaction    | most cases            |
+| `statement`   | connection released after each statement      | rarely used           |
 
 #### Read Replicas to distribute reads
 For excessive reads, the most effective solution is to create read replicas and route read queries to them.
@@ -933,6 +1037,8 @@ ALTER TABLE events SET (fillfactor = 70);
 | Table bloat          | Autovacuum tuning    | Medium — prevents degradation     |
 | Growing volume       | Partitioning         | Medium — scales over time         |
 | Too many indexes     | Index audit          | Medium — reduces write overhead   |
+
+---
 
 # Redis
 
@@ -1122,6 +1228,8 @@ Redis has native commands for storing and querying geographic coordinates using 
 | Unique counting           | HyperLogLog         |
 | Existence check           | Bloom Filter        |
 
+---
+
 # Kafka
 
 How to define and redefine the number of consumers in Kafka during consumer lag?
@@ -1148,6 +1256,8 @@ and rebalance distributes partitions.
 - High lag, partitions = consumers: optimize processing (batch, internal parallelism per consumer) or increase partitions.
 - Uneven lag distribution: review key/hashing, possible hot partition.
 - Automatic scaling: KEDA + lag threshold.
+
+---
 
 # Cache
 
@@ -1191,6 +1301,8 @@ and marks them as published or removes them from the table (preferably).
 
 Error handling must include mechanisms to deal with publishing failures, such as retries and monitoring, to ensure that
 all events are eventually published and only removed upon that confirmation.
+
+---
 
 # Trade-offs and Disadvantages of Microservices
 
@@ -1317,6 +1429,80 @@ The worst trade-off of all — adopting microservices before understanding the d
 * Independent deploys are critical: different teams need to release features without coordinating.
 * Domain boundaries are well understood: you already understand the business well enough to split it without mistakes.
 
+---
+
+# GraphQL vs REST
+
+| Dimension             | REST                                              | GraphQL                                                       |
+| --------------------- | ------------------------------------------------- | ------------------------------------------------------------- |
+| Data fetching         | Fixed endpoints, fixed response shape             | Client specifies exact fields needed                          |
+| Over/under-fetching   | Common — endpoint returns all fields              | Eliminated — only requested fields returned                   |
+| Versioning            |  `/v1/`, `/v2/` in URL                            | Schema evolution with deprecation                             |
+| Caching               | HTTP cache (CDN, browser) natively                | Harder — POST by default, requires custom cache               |
+| File uploads          | Simple multipart                                  | Complex (non-standard)                                        |
+| Real-time             | SSE / WebSocket (separate)                        | Native subscriptions                                          |
+| Tooling               | Widespread                                        | Growing (Apollo, gqlgen in Go)                                |
+| Best for              | Public APIs, simple CRUD, CDN-cached resources    | Complex frontends, mobile (bandwidth-sensitive), BFF pattern  |
+
+**Rule of thumb**: REST for public/external APIs; GraphQL for internal APIs serving multiple clients with varying data needs.
+
+---
+
+# Infrastructure & IaC
+
+## Terraform State Management
+
+| Concern           | Solution                                                                  |
+| ----------------- | ------------------------------------------------------------------------- |
+| Remote state      | S3 + DynamoDB lock (AWS) or GCS + Cloud Spanner (GCP)                     |
+| Team isolation    | Workspaces or separate state files per environment                        |
+| Secrets           | Never in state — use Vault, AWS Secrets Manager, or GCP Secret Manager    |
+| Drift detection   | `terraform plan` in CI; immutable infra mindset                           |
+
+## Deployment Strategies
+
+| Strategy      | Rollback speed        | Blast radius              | Traffic shift             |
+| ------------- | --------------------- | ------------------------- | ------------------------- |
+| Recreate      | Instant               | Full                      | Hard cutover              |
+| Rolling       | Slow                  | Partial                   | Gradual                   |
+| Blue/Green    | Instant (flip DNS/LB) | Full → none after flip    | Hard cutover              |
+| Canary        | Instant               | Small % initially         | Gradual (1% → 10% → 100%) |
+| Feature flags | Instant               | Configurable              | Per-user / per-segment    |
+
+**Blue/Green**: two identical environments; switch router. Expensive but safest.
+**Canary**: route small % of traffic to new version; monitor; roll forward or back.
+
+## CI/CD Pipeline Design
+
+```
+Trigger (push/PR)
+  → Lint + Unit tests
+  → Build + Docker image
+  → Push to registry
+  → Deploy to staging
+  → Integration tests
+  → (manual gate or automated)
+  → Deploy to production (canary → full rollout)
+  → Smoke tests
+  → Alerting & rollback if SLO breach
+```
+
+## Observability Stack
+
+| Pillar    | Tools                             | Purpose                       |
+| --------- | --------------------------------- | ----------------------------- |
+| Metrics   | Prometheus + Grafana              | Dashboards, SLO tracking      |
+| Logs      | Loki / ELK                        | Centralized, searchable       |
+| Traces    | Jaeger / Tempo (OpenTelemetry)    | End-to-end request tracing    |
+| Alerts    | Alertmanager / PagerDuty          | On-call notification          |
+
+**The four golden signals** (Google SRE):
+- **Latency** — how long requests take
+- **Traffic** — how much demand
+- **Errors** — rate of failed requests
+- **Saturation** — how full the service is (CPU, memory, queue depth)
+
+---
 
 # Leetcode
 
@@ -1455,7 +1641,6 @@ func threeSum(nums []int) [][]int {
 ```
 
 ## 79. Word Search
-
 Given an `m x n` grid of characters `board` and a string `word`, return `true` if `word` exists in the grid.
 
 The word can be constructed from letters of sequentially adjacent cells, where adjacent cells are horizontally or vertically neighboring. The same letter cell may not be used more than once.
