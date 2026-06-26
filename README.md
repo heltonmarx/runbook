@@ -1454,6 +1454,50 @@ func threeSum(nums []int) [][]int {
 }
 ```
 
+## 79. Word Search
+
+Given an `m x n` grid of characters `board` and a string `word`, return `true` if `word` exists in the grid.
+
+The word can be constructed from letters of sequentially adjacent cells, where adjacent cells are horizontally or vertically neighboring. The same letter cell may not be used more than once.
+
+```go
+func exist(board [][]byte, word string) bool {
+	if len(board) == 0 || len(board[0]) == 0 || len(word) == 0 {
+		return false
+	}
+    rows, cols := len(board), len(board[0])
+
+	var dfs func(x int, y int, word string) bool
+	dfs = func(x int, y int, word string) bool {
+		if len(word) == 0 {
+			return true
+		}
+		if x < 0 || x >= rows || 
+            y < 0 || y >= cols || 
+            board[x][y] != word[0] {
+			return false
+		}
+		board[x][y] ^= 0xFF
+        res := dfs(x+1, y, word[1:]) ||
+			dfs(x-1, y, word[1:]) ||
+			dfs(x, y+1, word[1:]) ||
+			dfs(x, y-1, word[1:])
+		board[x][y] ^= 0xFF
+		return res
+	}
+	for i, row := range board {
+		for j := range row {
+			if dfs(i, j, word) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+```
+
 ## 239. Sliding Window Maximum
 You are given an array of integers nums, there is a sliding window of size k
 which is moving from the very left of the array to the very right.
@@ -1620,6 +1664,59 @@ func canFinish(numCourses int, prerequisites [][]int) bool {
 }
 ```
 
+## 801. Subdomain Visit Count
+
+A website domain "discuss.leetcode.com" consists of various subdomains. 
+At the top level, we have "com", at the next level, we have "leetcode.com" and at the lowest level, "discuss.leetcode.com". 
+
+When we visit a domain like "discuss.leetcode.com", we will also visit the parent domains "leetcode.com" and "com" implicitly.
+
+A count-paired domain is a domain that has one of the two formats "rep d1.d2.d3" or "rep d1.d2" where rep is the number of visits to the domain and d1.d2.d3 is the domain itself.
+
+For example, "9001 discuss.leetcode.com" is a count-paired domain that indicates that discuss.leetcode.com was visited 9001 times.
+Given an array of count-paired domains cpdomains, return an array of the count-paired domains of each subdomain in the input. You may return the answer in any order.
+
+```go
+func subdomainVisits(cpdomains []string) []string {
+	m := make(map[string]int64, len(cpdomains))
+
+	for _, d := range cpdomains {
+		space := strings.IndexByte(d, ' ')
+		if space <= 0 {
+			continue
+		}
+
+		count, err := strconv.ParseInt(d[:space], 10, 64)
+		if err != nil && count <= 0 {
+			continue
+		}
+		domain := d[space+1:]
+		for _, sub := range splitDomain(domain) {
+			m[sub] += count
+		}
+	}
+
+	res := make([]string, 0, len(m))
+	for k, v := range m {
+		res = append(res, strconv.FormatInt(v, 10)+" "+k)
+	}
+	return res
+}
+
+func splitDomain(domain string) []string {
+	parts := strings.Split(domain, ".")
+	n := len(parts)
+	if n < 2 {
+		return []string{domain}
+	}
+	res := make([]string, 0, n)
+	for i := range n {
+		res = append(res, strings.Join(parts[i:], "."))
+	}
+	return res
+}
+
+```
 
 ## Find Cipher
 You're writing a puzzle helper app in which a user can enter a word, and the app
@@ -1791,11 +1888,12 @@ func checkEmployeeRecord(records [][]string) ([]string, []string) {
 	return toSlice(enterWithoutExitSet), toSlice(exitWithoutEnterSet)
 }
 
-func toSlice(m map[string]struct{}) []string {
-	keys := make([]string, 0, len(m))
+func toSlice[K comparable](m map[K]struct{}) []K {
+	keys := make([]K, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
 	return keys
 }
+
 ```
