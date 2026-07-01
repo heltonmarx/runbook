@@ -82,7 +82,7 @@ This is cheap - no OS thread is created.
 
 When running, locals stay on the stack (no GC involvement), but any object that escapes
 (returned pointer, captured by closure, assigned to interface, etc.) goes to the *heap* and 
-becomes the GC's responsibility, During a GC mark phase, a **write barrier** os activated, any new pointer
+becomes the GC's responsibility, During a GC mark phase, a **write barrier OS** activated, any new pointer
 writes are intercepted so the GC doesn't miss live objects being created mid-scan.
 
 The GC itself runs mostly concurrently with goroutines using a **tri-color mark-and-sweep** algorithm.
@@ -871,11 +871,11 @@ Additionally, PostgreSQL has a `max_connections` limit (default 100). When this 
 FATAL: sorry, too many clients already
 ```
 
-#### Connection Pooling with PgBouncer
+### Connection Pooling with PgBouncer
 The primary solution for a high number of connections. PgBouncer sits between the application and the database — the application opens hundreds of connections to PgBouncer, but it maintains only a small pool of real connections to PostgreSQL.
 * Application (500 connections) → PgBouncer → PostgreSQL (20 real connections)
 
-#### Operation Modes
+### Operation Modes
 
 | Mode          | Behavior                                      | Ideal for             |
 | ------------- | --------------------------------------------- | --------------------- |
@@ -883,10 +883,10 @@ The primary solution for a high number of connections. PgBouncer sits between th
 | `transaction` | connection released after each transaction    | most cases            |
 | `statement`   | connection released after each statement      | rarely used           |
 
-#### Read Replicas to distribute reads
+### Read Replicas to distribute reads
 For excessive reads, the most effective solution is to create read replicas and route read queries to them.
 
-#### Read query optimization
+### Read query optimization
 Before scaling horizontally, ensure queries are efficient.
 
 ```sql
@@ -912,7 +912,7 @@ ORDER BY created_at DESC;
 -- Buffers: low hit           → cache miss, lots of I/O
 ```
 
-#### Indexes for frequently read queries:
+### Indexes for frequently read queries:
 
 ```sql
 -- Simple index
@@ -930,7 +930,7 @@ ON orders(created_at DESC);
 
 `CONCURRENTLY` is essential in production — it creates the index without blocking reads and writes on the table.
 
-#### Application cache for repetitive reads
+### Application cache for repetitive reads
 Queries that return the same data frequently should not reach the database at all.
 
 ## Excessive writes impacting reads
@@ -942,18 +942,18 @@ PostgreSQL uses MVCC (Multi-Version Concurrency Control) — normal reads do not
 * WAL pressure: intense writes generate a lot of WAL, impacting disk I/O shared with reads.
 * Checkpoint storms: PostgreSQL forces periodic flushes to disk that degrade overall performance.
 
-#### Separating reads and writes with CQRS
+### Separating reads and writes with CQRS
 The cleanest separation — reads and writes have completely different models and routes.
 * Write path: API → command → Primary DB (optimized writes)
 * Read path: API → query → Read Replica (optimized reads, different indexes)
 
-#### Asynchronous writes with buffer (Kafka/Queue)
+### Asynchronous writes with buffer (Kafka/Queue)
 For write spikes, buffer the operations in a queue and write to the database in controlled batches.
 * API → Kafka → Consumer → Postgres (batch writes, controlled rate)
 
 **Real gain**: 1000 individual `INSERT`s in separate transactions vs 1 `INSERT` of 1000 rows in one transaction — the batch version can be 10–50x faster.
 
-#### Table partitioning
+### Table partitioning
 For tables with extremely high write volume (logs, events, metrics), partitioning distributes data and reduces contention.
 
 ```sql
@@ -980,7 +980,7 @@ CREATE INDEX ON events_2026_02(user_id, created_at);
 DROP TABLE events_2025_01;  -- much faster than DELETE
 ```
 
-#### Tuning VACUUM and autovacuum
+### Tuning VACUUM and autovacuum
 With many writes, dead tuples accumulate quickly. The default autovacuum may not be able to keep up.
 
 ```sql
@@ -1003,7 +1003,7 @@ FROM pg_stat_user_tables
 WHERE tablename = 'events';
 ```
 
-#### Optimizing indexes to avoid penalizing writes
+### Optimizing indexes to avoid penalizing writes
 Every index on a table has a cost on every `INSERT`, `UPDATE`, and `DELETE`. High-write tables should not have unnecessary indexes.
 
 ```sql
@@ -1037,6 +1037,81 @@ ALTER TABLE events SET (fillfactor = 70);
 | Table bloat          | Autovacuum tuning    | Medium — prevents degradation     |
 | Growing volume       | Partitioning         | Medium — scales over time         |
 | Too many indexes     | Index audit          | Medium — reduces write overhead   |
+
+## Spikes during your redeployment scenario
+During redeployment, old and new instances of a service briefly coexits, so the number
+of clients trying to open connections roughly doubles for a short window. Each of these
+clients is also competing for CPU, network bandwidth, and TCP buffer space on both ends.
+If consumers (your application processes) are slower to read result sets back -- because
+they're also under deploy-time load, doing JIT warmup, GC, container CPU throttling, etc.
+-- backends on the PostgreSQL side end up parked in `ClientWrite`, waiting for those slow
+consumers to catch up.
+
+This creates a feedback loop:
+ * Connections that would normally complete quickly and return to the PgBouncer pool 
+  now sit open longer (stuck in `ClientWrite`), so fewer connections are available
+  for new incoming requets.
+ * PgBouncer either queues new connection requests or, once its own limits are hit,
+  can't get a serve connection from Postgres at all -- and Postgres itself starts
+  rejecting new connections outright once `max_connections` is exhausted, which is
+  exactly the `08004` (**SQLServerRejectedEstablishmentOfSQLConnection**) rejections is seeing.
+* The rising of `ClientWrite` isn't actually causing the connection exhaustion in isolation -- it's
+  a symptom and an amplifier. Each connection takes longer to finish (because it's stuck waiting
+  to flush results), so the pool empties out slower than new connections are arriving, which triggers the rejection.
+
+### Why scaling out (more replicas) fixed it.
+Adding read replicas and distributing the read-heavy traffic across them addresses the root
+contention directly:
+* Each individual PostgreSQL instance now handles a smaller slice of total concurrent
+  connections and total result-set traffic.
+
+With less aggregate load per node:
+* CPU and network contention per server drops, so backends spend less time stuck in `ClientWrite`,
+  results get flushed faster, connections get freed faster.
+* The effective ceiling (`max_connections` per instance, or pgbouncer's pool size per instance)
+  is no longer hit during the redeploy spike, because the same total client connection count is now
+  spread across multiple database endpoints instead of slamming one.
+* This shortens the "vicious loop" window: connections turn over quickly enough that the spike from
+  a rolling deploy doesn't outrun the pool's ability to recycle them.
+
+
+## Why DynamoDB "joins" look faster than Postgres joins
+DynamoDB has no JOIN operation at all. The real comparison isn't join performance -- it's join *elimination*
+via **denormalization**.
+
+In DynamoDB, related data is typically denormalized at write time into a single item or item collection
+(single-table design), keyed so one `Query` call returns everything needed.
+The "join" already happened when the data was written.
+
+|               | Postgres (normalized)                             | DynamoDB (denormalized)                               |
+|---------------|---------------------------------------------------|-------------------------------------------------------|
+| Read cost     | Index lookup + join + filter evaluation per row   | Single key/range fetch, filters applied post-fetch    |
+| Write cost    | Single write, always consistent                   | Fan-out write to every duplicated copy                |
+| Consistency   | Always current (single source of truth)           | Eventual, needs streams/triggers to propagate changes |
+
+So DynamoDB doesn't execute joins faster — it avoids needing one, at the cost of write-time complexity and consistency windows.
+
+## Applying denormalization in Postgres
+
+**a) Covering index**:
+Add na index with `INCLUDE` on the filtered/selected columns so the inner side of the join is satisfied via an index-only scan.
+No write-side complexity, preserves single-source-of-truth.
+
+**b) Materialized view**:
+Precompute the join result into a view, indexed for fast lookup. Cheap to query, but requires `REFRESH MATERIALIZED VIEW` (or trigger-driven refresh) 
+and tolerates some staleness.
+
+**c) Duplicate columns directly (full denormalization)**:
+Copy the needed columns from the joined table onto the primary table, kept in sync via an `AFTER UPDATE` trigger. Eliminates the join entirely but introduces fan-out writes — same tradeoff as DynamoDB Streams.
+
+**d) Selective denormalization**:
+Duplicate only the columns used in `WHERE` filters, not the full row, to shrink the write-side sync burden while still letting the planner skip joining out filtered rows.
+
+## When it's actually worth it
+
+Denormalization only helps when the *join itself* — not disk I/O, not filtering — is the dominant cost, which usually only shows up at high QPS or poor join-key selectivity. For a highly selective, well-indexed lookup, a normal join is often fast enough.
+
+Run `EXPLAIN ANALYZE` first to confirm you're join-bound rather than I/O-bound before adding write-side complexity.
 
 ---
 
@@ -1232,17 +1307,16 @@ Redis has native commands for storing and querying geographic coordinates using 
 
 # Kafka
 
-How to define and redefine the number of consumers in Kafka during consumer lag?
-
+## How to define and redefine the number of consumers in Kafka during consumer lag?
 Number of active consumers <= number of topic partitions.
 If consumers > partitions, the excess ones remain idle.
 To reduce lag, you normally need more **partitions** (not just more consumers)
 and then scale consumers up to that limit.
 
-1. Diagnose the lag first (dashboards).
- LAG per partition, `CURRENT-OFFSET` vs `LOG-END-OFFSET`. If some partitions have high lag and others zero:
-  - Distribution problem / hot partition.
-  - Not just a consumer quantity issue.
+1. Diagnose the lag first (dashboards): 
+LAG per partition, `CURRENT-OFFSET` vs `LOG-END-OFFSET`. If some partitions have high lag and others zero:
+- Distribution problem / hot partition.
+- Not just a consumer quantity issue.
 
 2. Increase partitions (if necessary):
  Increasing partitions changes key hashing — may break key-based ordering for existing messages.
@@ -1517,7 +1591,7 @@ type Cache struct {
     mutex sync.Mutex
     cache map[int]*list.Element
     list *list.List
-    limit int
+    capacity int
 }
 
 type Entry struct {
@@ -1527,6 +1601,7 @@ type Entry struct {
 
 func NewCache(capacity int) *Cache{
     return &Cache{
+        capacity: capacity,
         cache: make(map[int]*list.Element)
         list: list.New(),
     }
@@ -1551,12 +1626,13 @@ func (c *Cache) Put(key int, value int) {
     if element, ok := c.cache[key]; ok && element != nil {
         element.Value.(*Entry).value = value
         c.list.MoveToFront(element)
+        return
     }
     entry := &Entry{key: key, value: value}
     element := c.list.PushFront(entry)
     c.cache[key] = element
 
-    if c.list.Len() > c.limit {
+    if c.list.Len() >= c.capacity {
         element = c.list.Back()
         if element != nil {
             key := element.Value.(*Entry).key
@@ -2238,4 +2314,28 @@ func wordSearchMulti(board [][]byte, words []string) []Position {
 	}
 	return results
 }
+```
+
+## Prime
+Write a function to check if a number is prime.
+
+```go
+func isPrime(number int) bool {
+	switch {
+	case number < 1:
+		return false
+	case number == 2:
+		return true
+	case number%2 == 0:
+		return false
+	}
+	limit := int(math.Sqrt(float64(number)))
+	for i := 3; i < limit; i += 2 {
+		if number%i == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 ```
